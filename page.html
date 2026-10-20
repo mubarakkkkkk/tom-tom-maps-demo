@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TomTom Address Autocomplete Demo</title>
+<link rel="stylesheet" href="https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps.css">
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#16181d; --muted:#6b7280; --border:#e2e5ea; --primary:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#181b21; --text:#f1f3f6; --muted:#98a0ad; --border:#2a2f38; --primary:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; justify-content:center; padding:24px 16px; }
+  .wrap { width:100%; max-width:560px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.sub { margin:0 0 16px; color:var(--muted); font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+  label { display:block; font-size:12px; font-weight:600; margin-bottom:6px; color:var(--muted); }
+  input { width:100%; padding:10px 12px; font-size:15px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); outline:none; }
+  input:focus { border-color:var(--primary); }
+  .search { position:relative; }
+  .spinner { position:absolute; right:12px; top:34px; width:16px; height:16px; border:2px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .7s linear infinite; display:none; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  ul { list-style:none; margin:6px 0 0; padding:0; border:1px solid var(--border); border-radius:8px; overflow:hidden; display:none; background:var(--card); }
+  li { padding:10px 12px; font-size:14px; cursor:pointer; border-bottom:1px solid var(--border); }
+  li:last-child { border-bottom:none; }
+  li.active, li:hover { background:var(--bg); }
+  li small { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
+  .msg { font-size:13px; color:#dc2626; margin-top:8px; display:none; }
+  #result { display:none; }
+  .coords { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  .coords div { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:13px; }
+  .coords span { display:block; color:var(--muted); font-size:11px; }
+  #map { height:260px; border-radius:10px; overflow:hidden; margin-top:12px; border:1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Address search</h1>
+  <p class="sub">Type an address, pick a suggestion, get latitude and longitude.</p>
+
+  <div class="card">
+    <label for="key">TomTom API key (get a free one at developer.tomtom.com, no card needed)</label>
+    <input id="key" type="password" placeholder="Paste your API key" autocomplete="off">
+  </div>
+
+  <div class="card search">
+    <label for="q">Address</label>
+    <input id="q" type="text" placeholder="e.g. Ring Road, Ibadan" autocomplete="off">
+    <div class="spinner" id="spin"></div>
+    <ul id="list"></ul>
+    <div class="msg" id="err"></div>
+  </div>
+
+  <div class="card" id="result">
+    <strong id="addr"></strong>
+    <div class="coords">
+      <div><span>Latitude</span><b id="lat"></b></div>
+      <div><span>Longitude</span><b id="lon"></b></div>
+    </div>
+    <div id="map"></div>
+  </div>
+</div>
+
+<script src="https://api.tomtom.com/maps-sdk-for-web/cdn/6.x/6.25.0/maps/maps-web.min.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+  const keyEl = $('key'), q = $('q'), list = $('list'), spin = $('spin'), err = $('err');
+
+  // Optional: restrict results to a country (ISO code). Set to '' for worldwide.
+  const COUNTRY = 'NG';
+
+  keyEl.value = localStorage.getItem('tt_key') || '';
+  keyEl.addEventListener('input', () => localStorage.setItem('tt_key', keyEl.value.trim()));
+
+  let timer = null, reqId = 0, items = [], active = -1, map = null, marker = null;
+
+  function showError(m) { err.textContent = m; err.style.display = m ? 'block' : 'none'; }
+
+  q.addEventListener('input', () => {
+    clearTimeout(timer);
+    const text = q.value.trim();
+    if (text.length < 3) { render([]); return; }
+    timer = setTimeout(() => search(text), 300);
+  });
+
+  async function search(text) {
+    const key = keyEl.value.trim();
+    if (!key) { showError('Paste your TomTom API key first.'); return; }
+    const id = ++reqId;
+    spin.style.display = 'block'; showError('');
+    try {
+      const params = new URLSearchParams({ key, typeahead: 'true', limit: '6', idxSet: 'Addr,Str,Geo,POI' });
+      if (COUNTRY) params.set('countrySet', COUNTRY);
+      const res = await fetch(`https://api.tomtom.com/search/2/search/${encodeURIComponent(text)}.json?${params}`);
+      if (!res.ok) throw new Error(res.status === 403 ? 'Invalid API key or Search API not enabled.' : `Search failed (${res.status}).`);
+      const data = await res.json();
+      if (id !== reqId) return; // a newer search superseded this one
+      render(data.results || []);
+    } catch (e) {
+      if (id === reqId) { render([]); showError(e.message); }
+    } finally {
+      if (id === reqId) spin.style.display = 'none';
+    }
+  }
+
+  function render(results) {
+    items = results; active = -1; list.innerHTML = '';
+    results.forEach((r, i) => {
+      const li = document.createElement('li');
+      const title = r.poi?.name || r.address?.freeformAddress || 'Unknown';
+      const sub = r.poi ? r.address?.freeformAddress : [r.address?.countrySubdivision, r.address?.country].filter(Boolean).join(', ');
+      li.innerHTML = `${esc(title)}${sub ? `<small>${esc(sub)}</small>` : ''}`;
+      li.addEventListener('mousedown', e => { e.preventDefault(); choose(i); });
+      list.appendChild(li);
+    });
+    list.style.display = results.length ? 'block' : 'none';
+  }
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  q.addEventListener('keydown', e => {
+    const lis = list.children;
+    if (!lis.length) return;
+    if (e.key === 'ArrowDown') { active = (active + 1) % lis.length; e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { active = (active - 1 + lis.length) % lis.length; e.preventDefault(); }
+    else if (e.key === 'Enter' && active >= 0) { choose(active); e.preventDefault(); return; }
+    else if (e.key === 'Escape') { render([]); return; }
+    [...lis].forEach((li, i) => li.classList.toggle('active', i === active));
+  });
+
+  q.addEventListener('blur', () => setTimeout(() => (list.style.display = 'none'), 100));
+  q.addEventListener('focus', () => { if (items.length) list.style.display = 'block'; });
+
+  function choose(i) {
+    const r = items[i];
+    const address = r.address?.freeformAddress || r.poi?.name || '';
+    const { lat, lon } = r.position;
+    q.value = address;
+    render([]);
+
+    $('addr').textContent = address;
+    $('lat').textContent = lat;
+    $('lon').textContent = lon;
+    $('result').style.display = 'block';
+    showMap(lat, lon);
+
+    // This is the payload your business form would receive
+    console.log({ address, latitude: String(lat), longitude: String(lon) });
+  }
+
+  function showMap(lat, lon) {
+    if (!window.tt) return; // SDK failed to load; coordinates still show
+    const key = keyEl.value.trim();
+    if (!map) {
+      map = tt.map({ key, container: 'map', center: [lon, lat], zoom: 15 });
+      marker = new tt.Marker().setLngLat([lon, lat]).addTo(map);
+    } else {
+      map.setCenter([lon, lat]).setZoom(15);
+      marker.setLngLat([lon, lat]);
+    }
+  }
+</script>
+</body>
+</html>
